@@ -65,6 +65,12 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
+# Ticker registry cache
+.ticker_cache/
+
+# SQLite database
+portfolio.db
+
 # Scrapy stuff:
 .scrapy
 
