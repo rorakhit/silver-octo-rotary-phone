@@ -9,7 +9,7 @@ A portfolio data reconciliation system built with Flask + SQLAlchemy. Ingests tr
 git clone <repo-url> && cd silver-octo-rotary-phone
 python -m pip install -r requirements.txt
 
-# 2. Run tests (69 tests, ~0.3s)
+# 2. Run tests (71 tests, ~0.3s)
 python -m pytest tests/ -v
 
 # 3. Run demos (no server needed — uses in-memory SQLite)
