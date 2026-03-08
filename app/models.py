@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from app import db
 
 
@@ -24,7 +24,7 @@ class Trade(db.Model):
     settlement_date = db.Column(db.Date, nullable=True)
     market_value = db.Column(db.Float, nullable=True)
     source_system = db.Column(db.String(50), nullable=False, default="internal")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         db.UniqueConstraint(
@@ -63,7 +63,7 @@ class Position(db.Model):
     shares = db.Column(db.Float, nullable=False)
     market_value = db.Column(db.Float, nullable=False)
     custodian_ref = db.Column(db.String(50), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         db.UniqueConstraint(

@@ -109,9 +109,22 @@ def _normalise_header(header: str) -> str:
 
 
 def _detect_delimiter(sample: str) -> str:
-    """Use csv.Sniffer to guess the delimiter, default to comma."""
+    """
+    Use csv.Sniffer to guess the delimiter.
+
+    First tries common delimiters (comma, pipe, tab, semicolon).  If none
+    match, does an unrestricted sniff so that unusual delimiters (colon,
+    tilde, etc.) are still detected.  Falls back to comma only if both
+    sniff attempts fail.
+    """
     try:
         dialect = csv.Sniffer().sniff(sample, delimiters=",|\t;")
+        return dialect.delimiter
+    except csv.Error:
+        pass
+    # Unrestricted sniff — lets csv.Sniffer consider any character
+    try:
+        dialect = csv.Sniffer().sniff(sample)
         return dialect.delimiter
     except csv.Error:
         return ","

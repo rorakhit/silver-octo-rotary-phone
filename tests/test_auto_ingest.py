@@ -75,6 +75,34 @@ class TestAutoDetectColumnMapping:
         assert report["rows_inserted"] == 1
         assert report["delimiter_detected"] == ";"
 
+    def test_auto_colon_delimited(self, client):
+        """Colon-separated file — uncommon delimiter detected via unrestricted sniff."""
+        colon = (
+            "Date:Account:Ticker:Qty:Price\n"
+            "2025-05-10:ACC_COLON:AAPL:20:195.00\n"
+        )
+        resp = client.post("/ingest", data={
+            "file": (io.BytesIO(colon.encode()), "colon.csv"),
+        }, content_type="multipart/form-data")
+        data = resp.get_json()
+        report = data["reports"][0]
+        assert report["rows_inserted"] == 1
+        assert report["delimiter_detected"] == ":"
+
+    def test_auto_tilde_delimited(self, client):
+        """Tilde-separated file — uncommon delimiter detected via unrestricted sniff."""
+        tilde = (
+            "Date~Account~Ticker~Quantity~Price\n"
+            "2025-05-11~ACC_TILDE~MSFT~15~430.00\n"
+        )
+        resp = client.post("/ingest", data={
+            "file": (io.BytesIO(tilde.encode()), "tilde.csv"),
+        }, content_type="multipart/form-data")
+        data = resp.get_json()
+        report = data["reports"][0]
+        assert report["rows_inserted"] == 1
+        assert report["delimiter_detected"] == "~"
+
     def test_auto_derives_trade_type_from_negative_qty(self, client):
         """When no trade_type column exists, negative qty = SELL."""
         csv = (
