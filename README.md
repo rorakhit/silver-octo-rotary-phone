@@ -7,7 +7,7 @@ A portfolio data reconciliation system built with Flask + SQLAlchemy. Ingests tr
 ```bash
 # 1. Clone and install (Python 3.10+)
 git clone <repo-url> && cd silver-octo-rotary-phone
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # 2. Run tests (69 tests, ~0.3s)
 python -m pytest tests/ -v
@@ -17,7 +17,7 @@ python demo_db.py                # DB schema, ORM queries, raw SQL, joins, dedup
 python demo_reconciliation.py    # End-to-end: ingest, positions, compliance, reconciliation
 
 # 4. Start the server and hit the API
-python run.py                    # http://localhost:5000, persists to portfolio.db
+python run.py                    # http://localhost:5001, persists to portfolio.db
 bash demo_queries.sh             # Ingests sample data + queries all endpoints via curl
 ```
 
@@ -37,7 +37,7 @@ Ingest one or more data files. Accepts `multipart/form-data` — upload files un
 Returns a data quality report per file: rows inserted, duplicates skipped, column mapping used, and any validation issues.
 
 ```bash
-curl -X POST http://localhost:5000/ingest \
+curl -X POST http://localhost:5001/ingest \
   -F "trades=@sample_data/trades_format1.csv" \
   -F "custodian=@sample_data/trades_format2.csv" \
   -F "positions=@sample_data/positions.yaml"
@@ -47,11 +47,19 @@ curl -X POST http://localhost:5000/ingest \
 
 Returns bank positions for an account on a given date, with market value and cost basis (computed from trades that have price data).
 
+```bash
+curl -s "http://localhost:5001/positions?account=ACC001&date=2025-01-15" | python3 -m json.tool
+```
+
 ### `GET /compliance/concentration?date=2025-01-15`
 
 Identifies accounts where any single equity exceeds 20% of total account market value.
 
 Each violation includes: account, ticker, concentration %, account total market value, and excess above threshold.
+
+```bash
+curl -s "http://localhost:5001/compliance/concentration?date=2025-01-15" | python3 -m json.tool
+```
 
 ### `GET /reconciliation?date=2025-01-15`
 
@@ -60,6 +68,10 @@ Compares custodian-sourced trades (`source_system != "internal"`) against bank p
 - `shares_mismatch` — both sources have the position but share counts differ
 - `missing_in_bank` — custodian has it, bank does not
 - `missing_in_trades` — bank has it, custodian does not
+
+```bash
+curl -s "http://localhost:5001/reconciliation?date=2025-01-15" | python3 -m json.tool
+```
 
 ## Supported Input Formats
 

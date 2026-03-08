@@ -7,7 +7,7 @@
 #   2. In another terminal: bash demo_queries.sh
 # =============================================================================
 
-BASE="http://localhost:5000"
+BASE="http://localhost:5001"
 
 echo "============================================"
 echo "1. INGEST all three sample files"
