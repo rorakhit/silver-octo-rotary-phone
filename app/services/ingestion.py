@@ -134,6 +134,12 @@ def _map_keys(raw_keys: list[str], patterns: list[tuple[str, re.Pattern]]) -> tu
     """
     Generic regex mapper – works for both tabular headers and YAML dict keys.
 
+    For each raw key, normalises it (lowercase, underscores) and tries every
+    pattern in order.  The first pattern that matches claims that key.  Once
+    a canonical field is assigned, it's marked as "used" so no second raw key
+    can map to the same canonical — this prevents ambiguity when headers like
+    "Quantity" and "Shares" both match the quantity pattern.
+
     Returns:
         mapping  – {raw_key: canonical_field}
         unmapped – list of raw keys that could not be resolved
@@ -147,7 +153,7 @@ def _map_keys(raw_keys: list[str], patterns: list[tuple[str, re.Pattern]]) -> tu
         matched = False
         for canon, pattern in patterns:
             if canon in used_canonicals:
-                continue
+                continue  # already assigned to another header
             if pattern.search(norm):
                 mapping[raw] = canon
                 used_canonicals.add(canon)
@@ -254,13 +260,7 @@ def _ingest_structured_positions(file_content: str) -> dict:
                 val = str(pos.get(canon_to_raw["custodian_ref"], "")).strip()
                 custodian_ref = val or None
 
-            existing = Position.query.filter_by(
-                report_date=report_date,
-                account_id=account_id,
-                ticker=ticker,
-            ).first()
-
-            if existing:
+            if Position.exists(report_date, account_id, ticker):
                 skipped += 1
                 continue
 
@@ -365,12 +365,14 @@ def _ingest_tabular_trades(file_content: str) -> dict:
             quantity = float(row[canon_to_raw["quantity"]])
             seen_tickers.add(ticker)
 
+            # Optional fields — only extracted if the column was resolved
             price = None
             if "price" in canon_to_raw:
                 val = row[canon_to_raw["price"]].strip()
                 if val:
                     price = float(val)
 
+            # Infer BUY/SELL from quantity sign when no explicit column exists
             trade_type = None
             if "trade_type" in canon_to_raw:
                 val = row[canon_to_raw["trade_type"]].strip().upper()
@@ -397,16 +399,10 @@ def _ingest_tabular_trades(file_content: str) -> dict:
                 if val:
                     source_system = val
 
-            # Deduplicate
-            existing = Trade.query.filter_by(
-                trade_date=trade_date,
-                account_id=account_id,
-                ticker=ticker,
-                quantity=quantity,
-                source_system=source_system,
-            ).first()
-
-            if existing:
+            # Deduplicate: query-before-insert on the unique constraint fields.
+            # If the same file is uploaded twice, duplicates are skipped rather
+            # than raising an IntegrityError.
+            if Trade.exists(trade_date, account_id, ticker, quantity, source_system):
                 skipped += 1
                 continue
 
@@ -497,13 +493,7 @@ def _ingest_tabular_positions(file_content: str) -> dict:
                 val = row[canon_to_raw["custodian_ref"]].strip()
                 custodian_ref = val or None
 
-            existing = Position.query.filter_by(
-                report_date=report_date,
-                account_id=account_id,
-                ticker=ticker,
-            ).first()
-
-            if existing:
+            if Position.exists(report_date, account_id, ticker):
                 skipped += 1
                 continue
 
@@ -582,13 +572,20 @@ def ingest_auto(file_content: str) -> dict:
     """
     Auto-detect file format and ingest.
 
-    - Structured (YAML/JSON) with a positions/holdings list  →  bank positions
-    - Tabular with position-specific headers                 →  tabular positions
-    - Tabular otherwise                                      →  tabular trades
+    Decision tree:
+      1. Try JSON/YAML parse.  If the result is a dict with a
+         positions/holdings key → structured position ingestion.
+      2. Otherwise treat as delimited text.  Classify headers to decide
+         trades vs positions, then route to the appropriate ingester.
+
+    This is the only public entry point — callers never need to know
+    the file format in advance.
     """
     stripped = file_content.strip()
 
     # --- Try structured formats (YAML / JSON) first ---
+    # JSON is tried before YAML for speed (json.loads is faster than
+    # yaml.safe_load). YAML is a superset of JSON, so it catches both.
     parsed = None
     if stripped.startswith("{") or stripped.startswith("["):
         try:
@@ -606,7 +603,8 @@ def ingest_auto(file_content: str) -> dict:
         return _ingest_structured_positions(file_content)
 
     # --- Tabular / delimited ---
-    # Peek at headers to decide trades vs positions
+    # Peek at headers to decide trades vs positions before committing
+    # to an ingestion path.
     sample = "\n".join(stripped.splitlines()[:5])
     delimiter = _detect_delimiter(sample)
     reader = csv.DictReader(io.StringIO(stripped), delimiter=delimiter)

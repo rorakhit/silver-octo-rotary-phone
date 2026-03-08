@@ -1,17 +1,33 @@
 """
 Ticker validation against SEC EDGAR (US), local DB, and OpenFIGI (international).
 
-Validation is three-tier:
+Validation is three-tier, ordered from fastest to slowest lookup:
+
   1. SEC bulk cache — ~10K US-listed tickers, refreshed daily from
-     https://www.sec.gov/files/company_tickers.json
+     https://www.sec.gov/files/company_tickers.json.
+     After the first load this is an in-memory set → O(1) lookup.
+     Catches the vast majority of tickers since most ingested data
+     will reference US-listed equities.
+
   2. Local DB fallback — tickers already ingested into our trades/positions
-     tables are implicitly valid; no external call needed.
+     tables are implicitly valid (no external call needed).  Requires a
+     SQL query per call, so it's slower than the in-memory SEC set but
+     avoids a network round-trip.  Useful for international tickers
+     (e.g. VOW3.DE) that wouldn't appear in the SEC list.
+
   3. OpenFIGI fallback — for tickers not in SEC or DB, a per-ticker
      lookup via https://api.openfigi.com/v3/mapping (no API key needed).
-     Results are cached locally so each ticker is only queried once.
+     Results are cached to disk so each ticker is only queried once.
+     Slowest tier: network call, used only as a last resort.
+
+The tiers are intentionally ordered fastest → slowest to minimise
+latency.  Checking the DB first would incur a SQL query even for
+common US tickers that resolve instantly from the in-memory set.
 
 All layers fail-open: if the network is unavailable, validation passes
-everything rather than blocking ingestion.
+everything rather than blocking ingestion.  Ticker warnings are
+advisory only — they appear in the data-quality report but never
+prevent rows from being inserted.
 
 Usage:
     from app.services.ticker_registry import validate_tickers
@@ -53,6 +69,7 @@ _figi_cache: dict[str, bool] | None = None  # ticker -> True (valid) / False (un
 # ---------------------------------------------------------------------------
 
 def _sec_cache_is_fresh() -> bool:
+    """Check if the local SEC ticker cache is within its 24-hour TTL."""
     if not os.path.exists(_META_FILE) or not os.path.exists(_SEC_CACHE_FILE):
         return False
     try:
@@ -109,7 +126,14 @@ def _load_sec_from_cache() -> set[str]:
 
 
 def get_sec_ticker_set() -> set[str]:
-    """Return the set of SEC-listed tickers, fetching/refreshing as needed."""
+    """
+    Return the set of SEC-listed tickers, fetching/refreshing as needed.
+
+    Lazy-loads: the first call fetches from SEC (or disk cache), then
+    subsequent calls return the in-memory set with zero overhead.
+    If a fresh fetch fails, falls back to a stale cache rather than
+    returning an empty set (which would cause fail-open on all tickers).
+    """
     global _sec_ticker_set
 
     if _sec_ticker_set is not None:
@@ -120,6 +144,7 @@ def get_sec_ticker_set() -> set[str]:
     else:
         _sec_ticker_set = _fetch_sec_tickers()
         if not _sec_ticker_set and os.path.exists(_SEC_CACHE_FILE):
+            # Network failed but we have an old cache — better stale than empty
             logger.warning("Using stale SEC ticker cache as fallback")
             _sec_ticker_set = _load_sec_from_cache()
 
@@ -278,30 +303,35 @@ def validate_tickers(tickers: list[str]) -> list[str]:
 
     Returns a list of warning strings for tickers not found in any source.
     Returns an empty list if registries are unavailable (fail-open).
+
+    The validation cascade progressively narrows the set of unknowns
+    through each tier, so expensive lookups (DB query, network call)
+    only run for tickers not already resolved by a cheaper tier.
     """
     if not tickers:
         return []
 
+    # --- Tier 1: SEC in-memory set (O(1) per ticker) ---
     sec = get_sec_ticker_set()
 
-    # If SEC is completely unavailable, fail-open
+    # If SEC is completely unavailable, fail-open — no warnings
     if not sec:
         return []
 
-    # Split into SEC-known and unknown
+    # Only tickers NOT in the SEC set need further checking
     unknown_in_sec = [t.upper() for t in tickers if t.upper() not in sec]
 
     if not unknown_in_sec:
         return []
 
-    # Filter out tickers already in our DB
+    # --- Tier 2: local DB (SQL query, catches previously-ingested tickers) ---
     db_tickers = _get_db_tickers()
     still_unknown = [t for t in unknown_in_sec if t not in db_tickers]
 
     if not still_unknown:
         return []
 
-    # Check remaining unknowns against OpenFIGI
+    # --- Tier 3: OpenFIGI (network call, last resort) ---
     figi_results = _check_openfigi(still_unknown)
 
     warnings = []

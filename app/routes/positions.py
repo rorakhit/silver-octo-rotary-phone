@@ -10,7 +10,6 @@ Returns positions for an account on a given date, including:
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
 
 from app.models import Position, Trade
 
@@ -31,11 +30,7 @@ def get_positions():
         return jsonify({"error": f"Invalid date format '{date_str}'. Use YYYY-MM-DD"}), 400
 
     # Bank positions for the requested date
-    bank_positions = (
-        Position.query
-        .filter_by(report_date=query_date, account_id=account)
-        .all()
-    )
+    bank_positions = Position.for_account_and_date(account, query_date)
 
     if not bank_positions:
         return jsonify({
@@ -45,22 +40,10 @@ def get_positions():
             "note": "No bank positions found for this account/date",
         }), 200
 
-    # Cost basis per ticker from trades with price data (cumulative up to query_date)
-    cost_basis_rows = (
-        Trade.query
-        .with_entities(
-            Trade.ticker,
-            func.sum(Trade.quantity * Trade.price).label("gross_cost"),
-        )
-        .filter(
-            Trade.account_id == account,
-            Trade.trade_date <= query_date,
-            Trade.price.isnot(None),
-        )
-        .group_by(Trade.ticker)
-        .all()
-    )
-    cost_basis_map = {row.ticker: round(row.gross_cost, 2) for row in cost_basis_rows}
+    # Cost basis per ticker from trades with price data (cumulative up to query_date).
+    # The price IS NOT NULL filter is important — custodian trade files typically
+    # report market_value but omit per-share price, so they are naturally excluded.
+    cost_basis_map = Trade.cost_basis_by_ticker(account, query_date)
 
     result = []
     total_market_value = 0.0

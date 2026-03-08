@@ -14,7 +14,6 @@ Reports three categories of discrepancy:
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
 
 from app.models import Position, Trade
 
@@ -33,40 +32,11 @@ def reconciliation():
     except ValueError:
         return jsonify({"error": f"Invalid date format '{date_str}'. Use YYYY-MM-DD"}), 400
 
-    # Aggregate custodian-sourced positions by (account, ticker)
-    custodian_rows = (
-        Trade.query
-        .with_entities(
-            Trade.account_id,
-            Trade.ticker,
-            func.sum(Trade.quantity).label("total_shares"),
-            func.sum(Trade.market_value).label("total_mv"),
-        )
-        .filter(
-            Trade.trade_date == query_date,
-            Trade.source_system != "internal",
-        )
-        .group_by(Trade.account_id, Trade.ticker)
-        .all()
-    )
+    # Build lookup dicts keyed by (account_id, ticker) for both sides
+    custodian_map = Trade.custodian_positions(query_date)
+    bank_map = Position.as_lookup(query_date)
 
-    # Bank positions
-    bank_rows = (
-        Position.query
-        .filter_by(report_date=query_date)
-        .all()
-    )
-
-    # Build lookup dicts keyed by (account_id, ticker)
-    custodian_map = {
-        (r.account_id, r.ticker): {"shares": r.total_shares, "market_value": r.total_mv}
-        for r in custodian_rows
-    }
-    bank_map = {
-        (p.account_id, p.ticker): {"shares": p.shares, "market_value": p.market_value}
-        for p in bank_rows
-    }
-
+    # Union of all keys — ensures we catch positions that exist in only one source
     all_keys = set(custodian_map) | set(bank_map)
 
     discrepancies = []
@@ -78,6 +48,8 @@ def reconciliation():
         bank = bank_map.get(key)
 
         if cust and bank:
+            # Tolerance-based comparison to avoid false positives from
+            # floating-point rounding (1e-4 for shares, 0.01 for dollars)
             share_diff = round(cust["shares"] - bank["shares"], 6)
             mv_diff = round((cust["market_value"] or 0) - bank["market_value"], 2)
             if abs(share_diff) > 1e-4 or abs(mv_diff) > 0.01:

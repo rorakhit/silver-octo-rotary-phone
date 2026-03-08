@@ -10,7 +10,6 @@ Returns only accounts/tickers that breach the threshold.
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
 
 from app.models import Position
 
@@ -31,33 +30,20 @@ def concentration():
     except ValueError:
         return jsonify({"error": f"Invalid date format '{date_str}'. Use YYYY-MM-DD"}), 400
 
-    # Total market value per account
-    account_totals = (
-        Position.query
-        .with_entities(
-            Position.account_id,
-            func.sum(Position.market_value).label("total_mv"),
-        )
-        .filter_by(report_date=query_date)
-        .group_by(Position.account_id)
-        .all()
-    )
+    # Two-pass approach:
+    # 1st query — aggregate total market value per account (denominator)
+    # 2nd query — iterate individual positions to check each against the threshold
+    total_mv_map = Position.account_totals(query_date)
 
-    if not account_totals:
+    if not total_mv_map:
         return jsonify({
             "date": date_str,
             "violations": [],
             "note": "No positions found for this date",
         }), 200
 
-    total_mv_map = {row.account_id: row.total_mv for row in account_totals}
-
-    # All individual positions for that date
-    positions = (
-        Position.query
-        .filter_by(report_date=query_date)
-        .all()
-    )
+    # Check each position's weight: position_mv / account_total_mv
+    positions = Position.for_date(query_date)
 
     violations = []
     for pos in positions:
